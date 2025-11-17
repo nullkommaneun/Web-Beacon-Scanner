@@ -1,0 +1,11 @@
+/* Import der 'Inter'-Schriftart für ein sauberes UI */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+body {
+    /* Setzen der importierten Schriftart als Standard */
+    font-family: 'Inter', sans-serif;
+}
+
+/* Zukünftige benutzerdefinierte Stile können hier hinzugefügt werden */
+
+ 
