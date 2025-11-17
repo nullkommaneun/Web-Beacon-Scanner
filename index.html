@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Beacon Scanner</title>
+    
+    <!-- Laden von Tailwind CSS für das UI-Framework -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Einbinden der eigenen Styles (z.B. für Schriftarten) -->
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Einbinden der Anwendungslogik 
+         'defer' stellt sicher, dass das Skript erst nach dem Parsen des HTMLs ausgeführt wird. -->
+    <script src="script.js" defer></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+    <div class="container max-w-4xl mx-auto p-4 md:p-6">
+        <header class="mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Web-Beacon-Scanner</h1>
+            <p class="text-gray-600">Sucht nach iBeacons und Eddystone-URLs via Web Bluetooth.</p>
+        </header>
+
+        <!-- Steuerungs-Buttons -->
+        <div class="flex flex-wrap gap-4 mb-6">
+            <button id="scan-start-btn" class="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Scan Starten
+            </button>
+            <button id="scan-stop-btn" disabled class="px-6 py-3 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-150 ease-in-out disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Scan Stoppen
+            </button>
+        </div>
+
+        <!-- On-Screen Debug-Fenster (wie gewünscht) -->
+        <div class="mb-6">
+            <label for="debug-log" class="block text-sm font-medium text-gray-700 mb-1">Debug-Log (On-Screen)</label>
+            <textarea id="debug-log" readonly class="w-full h-40 bg-gray-900 text-green-400 font-mono text-xs rounded-lg p-3 shadow-inner resize-none"></textarea>
+        </div>
+
+        <!-- Ergebnis-Bereich für Beacon-Karten -->
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4">Gefundene Beacons</h2>
+            <div id="results" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Beacon-Karten werden hier dynamisch eingefügt -->
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
+
+ 
