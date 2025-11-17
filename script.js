@@ -12,6 +12,7 @@ let discoveredDevices = new Map(); // Speichert gefundene Geräte (Key: device.i
 
 /**
  * Schreibt eine Nachricht in das On-Screen-Debug-Fenster und die Konsole.
+ * (Respektiert die Anforderung, dass der F12-Debugger nicht immer verfügbar ist)
  * @param {string} message - Die zu loggende Nachricht.
  */
 function log(message) {
@@ -39,8 +40,8 @@ async function startScan() {
     scanStartBtn.disabled = true;
     
     try {
-        // *** Angepasste Filter ***
-        // Wir filtern nur nach Formaten, die gelesen werden WOLLEN.
+        // *** ERWEITERTE FILTER ***
+        // Wir fügen offene Sensorformate (Ruuvi) und Standarddienste hinzu
         const filters = [
             // 1. iBeacon (Apple)
             { 
@@ -52,10 +53,21 @@ async function startScan() {
             // 2. Eddystone (Alle Typen: URL, UID, TLM)
             { 
                 services: [0xfeaa] 
-            }
+            },
+            // 3. NEU: RuuviTag (Open Source Sensor)
+            {
+                manufacturerData: [{
+                    companyIdentifier: 0x0499 // Ruuvi Innovations Ltd.
+                }]
+            },
+            // 4. NEU: Standard GATT-Dienste (Beispiele)
+            { services: [0x180F] }, // Battery Service
+            { services: [0x181A] }, // Environmental Sensing
+            { services: [0x180D] }  // Heart Rate
         ];
 
         const scan = await navigator.bluetooth.requestLEScan({
+            // acceptAllAdvertisements: true // Alternative, um *alles* zu sehen, aber 'filters' ist batterieschonender.
             filters: filters
         });
 
@@ -63,7 +75,7 @@ async function startScan() {
         navigator.bluetooth.addEventListener('advertisement', handleAdvertisement);
 
         log("Scan aktiv. Warte auf 'advertisement' Events...");
-        log("Filter: \"iBeacon & Eddystone (Alle Typen)\"");
+        log("Filter: \"iBeacon, Eddystone, RuuviTag, GATT-Dienste\"");
         scanStopBtn.disabled = false;
 
     } catch (error) {
@@ -109,40 +121,38 @@ function handleAdvertisement(event) {
     // 1. Prüfen auf Apple iBeacon (0x004C)
     if (event.manufacturerData.has(0x004C)) {
         const data = event.manufacturerData.get(0x004C);
-        // A. Ist es iBeacon (0x0215)?
         if (data.byteLength >= 23 && data.getUint8(0) === 0x02 && data.getUint8(1) === 0x15) {
             beaconData = parseIBeacon(data);
         }
-        // (Andere Apple-Formate wie "Find My" werden ignoriert)
     } 
-    // 2. Prüfen auf Google Eddystone (0xFEAA) - Alle Frame-Typen
+    // 2. Prüfen auf Google Eddystone (0xFEAA)
     else if (event.serviceData.has(0xfeaa)) {
-        const data = event.serviceData.get(0xfeaa);
-        beaconData = parseEddystone(data); // Diese Funktion parst jetzt URL, UID und TLM
+        beaconData = parseEddystone(event.serviceData.get(0xfeaa));
+    }
+    // 3. Prüfen auf RuuviTag (0x0499)
+    else if (event.manufacturerData.has(0x0499)) {
+        beaconData = parseRuuviTag(event.manufacturerData.get(0x0499));
+    }
+    // 4. Prüfen auf Standard GATT-Dienste (als Fallback)
+    else {
+        if (event.serviceData.has(0x180F)) {
+            beaconData = { type: 'GATT-Dienst', name: 'Batteriedienst (0x180F)' };
+        } else if (event.serviceData.has(0x181A)) {
+            beaconData = { type: 'GATT-Dienst', name: 'Umgebungssensor (0x181A)' };
+        } else if (event.serviceData.has(0x180D)) {
+            beaconData = { type: 'GATT-Dienst', name: 'Herzfrequenzmesser (0x180D)' };
+        }
     }
 
     // Wenn kein verwertbares (oder für uns interessantes) Format, abbrechen
     if (!beaconData) {
-        // TLM-Pakete werden oft ohne Geräte-ID (und ohne 'isNew' Flag) gesendet.
-        // Wir müssen prüfen, ob ein TLM für ein *bekanntes* Gerät gesendet wird.
-        if (event.serviceData.has(0xfeaa)) {
-            const tlmData = parseEddystone(event.serviceData.get(0xfeaa));
-            if (tlmData && tlmData.type === 'Eddystone-TLM') {
-                // Versuche, die TLM-Daten einer vorhandenen Karte zuzuordnen
-                // (Dies ist komplex, da TLM oft die ID nicht mitsendet)
-                // Fürs Erste loggen wir es, wenn wir es nicht zuordnen können.
-                if (!discoveredDevices.has(deviceId)) {
-                     log(`TLM-Paket empfangen, kann aber keinem Gerät zugeordnet werden (ID: ${deviceId.substring(0,10)}...).`);
-                }
-            }
-        }
         return;
     }
     
     // UI aktualisieren
     if (isNew) {
-        // Ein Eddystone-Beacon sendet möglicherweise abwechselnd UID- und TLM-Pakete.
-        // Wir wollen nur *eine* Karte pro Gerät.
+        // Verhindern, dass für jeden GATT-Dienst desselben Geräts eine neue Karte erstellt wird
+        // (Geräte mit mehreren Diensten senden oft mehrere Pakete)
         log(`Neuer Beacon [${beaconData.type}] gefunden: ${deviceId.substring(0, 10)}...`);
         const cardElement = createBeaconCard(beaconData, rssi, deviceId);
         resultsDiv.prepend(cardElement);
@@ -153,20 +163,18 @@ function handleAdvertisement(event) {
         });
     } else {
         const existing = discoveredDevices.get(deviceId);
-        // RSSI-Wert auf vorhandener Karte aktualisieren
         updateBeaconCardRSSI(existing.cardElement, rssi);
 
-        // Wenn ein neues Paket für ein bekanntes Gerät hereinkommt,
-        // (z.B. TLM-Daten für einen bekannten UID-Beacon),
-        // könnten wir die Karte aktualisieren.
-        // Vorerst aktualisieren wir nur RSSI, um Duplikate zu vermeiden.
+        // Optional: Wenn ein Gerät (z.B. Eddystone-UID) bereits bekannt ist
+        // und ein TLM-Paket (Telemetrie) sendet, könnten wir die Karte aktualisieren.
+        // Fürs Erste ist die RSSI-Aktualisierung ausreichend.
     }
 }
 
 /**
- * Parst die iBeacon-Daten aus dem Manufacturer Data Payload.
- * @param {DataView} data - Der Payload (beginnend mit 0x0215).
- * @returns {object | null} - Das iBeacon-Datenobjekt oder null.
+ * Parst die iBeacon-Daten (Typ 0x0215).
+ * @param {DataView} data - Der Payload.
+ * @returns {object}
  */
 function parseIBeacon(data) {
     const dv = new DataView(data.buffer, data.byteOffset);
@@ -178,22 +186,19 @@ function parseIBeacon(data) {
 }
 
 /**
- * Parst die Eddystone-Daten aus dem Service Data Payload.
- * Unters
- * @param {DataView} data - Der Payload (Service UUID 0xfeaa).
- * @returns {object | null} - Das Eddystone-Datenobjekt oder null.
+ * Parst alle Eddystone-Frame-Typen (URL, UID, TLM).
+ * @param {DataView} data - Der Payload (Service 0xfeaa).
+ * @returns {object | null}
  */
 function parseEddystone(data) {
     const dv = new DataView(data.buffer, data.byteOffset);
+    if (dv.byteLength === 0) return null;
+    
     const frameType = dv.getUint8(0);
 
     switch (frameType) {
         // Eddystone-UID (Frame 0x00)
         case 0x00:
-            // 0: 0x00 (Frame Type)
-            // 1: TX Power (ignoriert)
-            // 2-11: 10-byte Namespace
-            // 12-17: 6-byte Instance
             if (data.byteLength < 18) return null;
             const namespaceBytes = new Uint8Array(dv.buffer, dv.byteOffset + 2, 10);
             const instanceBytes = new Uint8Array(dv.buffer, dv.byteOffset + 12, 6);
@@ -211,34 +216,66 @@ function parseEddystone(data) {
 
         // Eddystone-TLM (Telemetry, Frame 0x20)
         case 0x20:
-            // 0: 0x20 (Frame Type)
-            // 1: Version (ignoriert)
-            // 2-3: Battery voltage (mV, Big Endian)
-            // 4-5: Temperature (Signed 8.8 fixed-point, Big Endian)
-            // 6-9: Advertising PDU count (Big Endian)
-            // 10-13: Time since power-on (0.1s, Big Endian)
             if (data.byteLength < 14) return null;
             const battery = dv.getUint16(2, false); // in mV
-            
-            // Temperatur ist 8.8 fixed-point
             const tempInt = dv.getInt8(4);
             const tempFrac = dv.getUint8(5);
             const temperature = tempInt + (tempFrac / 256.0);
-            
             const packets = dv.getUint32(6, false);
             const uptime = dv.getUint32(10, false) / 10.0; // in Sekunden
             
             return {
                 type: 'Eddystone-TLM',
                 battery: battery,
-                temperature: temperature.toFixed(2), // 2 Nachkommastellen
+                temperature: temperature.toFixed(2),
                 packets: packets,
-                uptime: uptime.toFixed(1) // 1 Nachkommastelle
+                uptime: uptime.toFixed(1)
             };
 
         default:
-            return null; // Andere Eddystone-Typen (EID, etc.) ignorieren wir
+            log(`Unbekannter Eddystone-Frame-Typ: 0x${frameType.toString(16)}`);
+            return null;
     }
+}
+
+/**
+ * Parst RuuviTag-Daten (Format 5).
+ * @param {DataView} data - Der Payload (Hersteller 0x0499).
+ * @returns {object | null}
+ */
+function parseRuuviTag(data) {
+    const dv = new DataView(data.buffer, data.byteOffset);
+    // Wir unterstützen nur das gängige "RAWv2" Format (Format 5)
+    const format = dv.getUint8(0);
+
+    if (format === 0x05) {
+        if (data.byteLength < 24) return null; // Format 5 ist 24 Bytes lang
+        
+        // Bytes 1-2: Temperatur (Signed, Big Endian, 0.005 Celsius)
+        const temp = dv.getInt16(1, false) * 0.005;
+        
+        // Bytes 3-4: Luftfeuchtigkeit (Unsigned, Big Endian, 0.0025 %RH)
+        const humidity = dv.getUint16(3, false) * 0.0025;
+        
+        // Bytes 5-6: Luftdruck (Unsigned, Big Endian, 0.01 hPa, offset -50000 Pa)
+        const pressure = (dv.getUint16(5, false) + 50000) / 100.0; // in hPa
+        
+        // Bytes 7-8 (Batt Volt) + 9-10 (Pwr Info)
+        const batteryInfo = dv.getUint16(7, false);
+        // Bits 0-10: Spannung (1mV)
+        const battery = (batteryInfo >> 5) + 1600; // in mV (Offset 1600mV)
+        
+        return {
+            type: 'RuuviTag Sensor',
+            temperature: temp.toFixed(2),
+            humidity: humidity.toFixed(2),
+            pressure: pressure.toFixed(2),
+            battery: battery
+        };
+    }
+    
+    log(`Unbekanntes RuuviTag-Format: 0x${format.toString(16)}`);
+    return null;
 }
 
 /**
@@ -304,7 +341,6 @@ function createBeaconCard(beaconData, rssi, deviceId) {
             `;
             break;
 
-        // NEUE KARTEN-TYPEN:
         case 'Eddystone-UID':
             title = "Eddystone-UID";
             borderColor = "border-purple-500";
@@ -322,6 +358,28 @@ function createBeaconCard(beaconData, rssi, deviceId) {
                 <p class="text-sm text-gray-700">Temperatur: <strong class="font-mono">${beaconData.temperature} °C</strong></p>
                 <p class="text-sm text-gray-700">Pakete: <strong class="font-mono">${beaconData.packets}</strong></p>
                 <p class="text-sm text-gray-700">Laufzeit: <strong class="font-mono">${beaconData.uptime} s</strong></p>
+            `;
+            break;
+            
+        // NEU: RuuviTag
+        case 'RuuviTag Sensor':
+            title = "RuuviTag Sensor (RAWv2)";
+            borderColor = "border-cyan-500";
+            content = `
+                <p class="text-sm text-gray-700">Temperatur: <strong class="font-mono">${beaconData.temperature} °C</strong></p>
+                <p class="text-sm text-gray-700">Luftfeuchtigkeit: <strong class="font-mono">${beaconData.humidity} %RH</strong></p>
+                <p class="text-sm text-gray-700">Luftdruck: <strong class="font-mono">${beaconData.pressure} hPa</strong></p>
+                <p class="text-sm text-gray-700">Batterie: <strong class="font-mono">${beaconData.battery} mV</strong></p>
+            `;
+            break;
+
+        // NEU: GATT-Dienste
+        case 'GATT-Dienst':
+            title = "GATT-Dienst erkannt";
+            borderColor = "border-gray-400";
+            content = `
+                <p class="text-sm text-gray-700">Gerät bewirbt: <strong class="font-mono">${beaconData.name}</strong></p>
+                <p class="text-xs text-gray-500 italic mt-1">Dies ist eine Ankündigung. Zum Auslesen der Daten ist eine Verbindung (GATT) erforderlich.</p>
             `;
             break;
 
@@ -378,7 +436,8 @@ function bytesToUuid(bytes) {
 /**
  * Hilfsfunktion: Konvertiert eine DataView (oder Uint8Array) in einen Hex-String.
  * @param {DataView | Uint8Array} data 
- * @returns {string} - Der Hex-String (OHNE "0x").
+ *Gibt den Hex-String OHNE "0x" Präfix zurück.
+ * @returns {string}
  */
 function bytesToHex(data) {
     let bytes;
